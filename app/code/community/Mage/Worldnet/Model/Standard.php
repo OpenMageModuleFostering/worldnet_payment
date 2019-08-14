@@ -1,0 +1,554 @@
+<?php
+/**
+ * Magento
+ *
+ * NOTICE OF LICENSE
+ *
+ * This source file is subject to the Open Software License (OSL 3.0)
+ * that is bundled with this package in the file LICENSE.txt.
+ * It is also available through the world-wide-web at this URL:
+ * http://opensource.org/licenses/osl-3.0.php
+ * If you did not receive a copy of the license and are unable to
+ * obtain it through the world-wide-web, please send an email
+ * to license@magentocommerce.com so we can send you a copy immediately.
+ *
+ * DISCLAIMER
+ *
+ * Do not edit or add to this file if you wish to upgrade Magento to newer
+ * versions in the future. If you wish to customize Magento for your
+ * needs please refer to http://www.magentocommerce.com for more information.
+ *
+ * @category   Mage
+ * @package    Mage_Worldnet
+ * @copyright  Copyright (c) 2008 Irubin Consulting Inc. DBA Varien (http://www.varien.com)
+ * @license    http://opensource.org/licenses/osl-3.0.php  Open Software License (OSL 3.0)
+ */
+
+/**
+ * Worldnet Form Model
+ *
+ * @category   Mage
+ * @package    Mage_Worldnet
+ * @name       Mage_Worldnet_Model_Standard
+ * @author     Magento Core Team <core@magentocommerce.com>
+ */
+class Mage_Worldnet_Model_Standard extends Mage_Payment_Model_Method_Abstract
+{
+    protected $_code  = 'worldnet_standard';
+    protected $_formBlockType = 'worldnet/standard_form';
+
+    protected $_isGateway               = false;
+    protected $_canAuthorize            = true;
+    protected $_canCapture              = true;
+    protected $_canCapturePartial       = false;
+    protected $_canRefund               = true;
+    protected $_canVoid                 = false;
+    protected $_canUseInternal          = false;
+    protected $_canUseCheckout          = true;
+    protected $_canUseForMultishipping  = false;
+
+    protected $_order = null;
+
+
+    /**
+     * Get Config model
+     *
+     * @return object Mage_Worldnet_Model_Config
+     */
+    public function getConfig()
+    {
+        return Mage::getSingleton('worldnet/config');
+    }
+
+    /**
+     * Return debug flag
+     *
+     *  @return  boolean
+     */
+    public function getDebug ()
+    {
+        return $this->getConfig()->getDebug();
+    }
+
+    /**
+     *  Returns Target URL
+     *
+     *  @return	  string Target URL
+     */
+    public function getWorldnetUrl ()
+    {
+	$gateway = $this->getConfig()->getWorldnetGateway();
+	$testAccount = $this->getConfig()->getMode();
+	
+        $serverUrl = 'https://';
+								
+				if($testAccount) $serverUrl .= 'test';
+				switch (strtolower($gateway)) {
+					default :
+					case 'worldnet'  : $serverUrl .= 'payments.worldnettps.com'; break;
+					case 'cashflows' : $serverUrl .= 'cashflows.worldnettps.com'; break;
+					case 'payius'    : $serverUrl .= 'payments.payius.com' ; break;
+					case 'pagotechnology'    : $serverUrl .= 'payments.pagotechnology.com' ; break;
+					case 'globalonepay'    : $serverUrl .= 'payments.globalone.me' ; break;
+					case 'anywherecommerce'    : $serverUrl .= 'payments.anywherecommerce.com' ; break;
+					case 'ctpayment'    : $serverUrl .= 'payments.ct-payment.com' ; break;
+					case 'payzone'    : $serverUrl .= 'payment.payzone.ie' ; break;
+					case 'payconex'    : $serverUrl .= 'gateway.payconex.net' ; break;
+                                         
+				}
+      $serverUrl .= '/merchant/paymentpage';
+      return $serverUrl;
+
+      
+    }
+
+    /**
+     *  Return URL for Worldnet success response
+     *
+     *  @return	  string URL
+     */
+    protected function getSuccessURL ()
+    {
+        return Mage::getUrl('worldnet/standard/successresponse');
+    }
+
+    /**
+     *  Return URL for Worldnet failure response
+     *
+     *  @return	  string URL
+     */
+    protected function getFailureURL ()
+    {
+        return Mage::getUrl('worldnet/standard/failureresponse');
+    }
+
+    /**
+     * Transaction unique ID sent to Worldnet and sent back by Worldnet for order restore
+     * Using created order ID
+     *
+     *  @return	  string Transaction unique number
+     */
+    protected function getVendorTxCode ()
+    {
+        return $this->getOrder()->getRealOrderId();
+    }
+
+    /**
+     *  Returns cart formatted
+     *  String format:
+     *  Number of lines:Name1:Quantity1:CostNoTax1:Tax1:CostTax1:Total1:Name2:Quantity2:CostNoTax2...
+     *
+     *  @return	  string Formatted cart items
+     */
+    protected function getFormattedCart ()
+    {
+        $items = $this->getOrder()->getAllItems();
+        $resultParts = array();
+        $totalLines = 0;
+        if ($items) {
+            foreach($items as $item) {
+                if ($item->getParentItem()) {
+                    continue;
+                }
+                $quantity = $item->getQtyOrdered();
+
+                $cost = sprintf('%.2f', $item->getBasePrice() - $item->getBaseDiscountAmount());
+                $tax = sprintf('%.2f', $item->getBaseTaxAmount());
+                $costPlusTax = sprintf('%.2f', $cost + $tax/$quantity);
+
+                $totalCostPlusTax = sprintf('%.2f', $quantity * $cost + $tax);
+
+                $resultParts[] = str_replace(':', ' ', $item->getName());
+                $resultParts[] = $quantity;
+                $resultParts[] = $cost;
+                $resultParts[] = $tax;
+                $resultParts[] = $costPlusTax;
+                $resultParts[] = $totalCostPlusTax;
+                $totalLines++; //counting actual formatted items
+            }
+       }
+
+       // add delivery
+       $shipping = $this->getOrder()->getBaseShippingAmount();
+       if ((int)$shipping > 0) {
+           $totalLines++;
+           $resultParts = array_merge($resultParts, array('Shipping','','','','',sprintf('%.2f', $shipping)));
+       }
+
+       $result = $totalLines . ':' . implode(':', $resultParts);
+       return $result;
+    }
+
+    /**
+     *  Format Crypted string with all order data for request to Worldnet
+     *
+     *  @return	  string Crypted string
+     */
+    protected function getCrypted ()
+    {
+        $order = $this->getOrder();
+        if (!($order instanceof Mage_Sales_Model_Order)) {
+            Mage::throwException($this->_getHelper()->__('Cannot retrieve order object'));
+        }
+
+        $shipping = $order->getShippingAddress();
+        $billing = $order->getBillingAddress();
+
+        $amount = $order->getBaseGrandTotal();
+
+        $currency = $order->getBaseCurrencyCode();
+
+        $queryPairs = array();
+
+        $transactionId = $this->getVendorTxCode();
+        $queryPairs['VendorTxCode'] = $transactionId;
+
+
+        $queryPairs['Amount'] = sprintf('%.2f', $amount);
+        $queryPairs['Currency'] = $currency;
+
+        // Up to 100 chars of free format description
+        $description = $this->getConfig()->getDescription() != ''
+                       ? $this->getConfig()->getDescription()
+                       : Mage::app()->getStore()->getName() . ' ' . ' payment';
+        $queryPairs['Description'] = $description;
+
+        $queryPairs['SuccessURL'] = $this->getSuccessURL();
+        $queryPairs['FailureURL'] = $this->getFailureURL();
+
+        $queryPairs['CustomerName'] = $billing->getFirstname().' '.$billing->getLastname();
+        $queryPairs['CustomerEMail'] = $order->getCustomerEmail();
+        $queryPairs['ContactNumber'] = $billing->getTelephone();
+        $queryPairs['ContactFax'] = $billing->getFax();
+
+        $queryPairs['VendorEMail'] = '';
+        $queryPairs['eMailMessage'] = '';
+
+        $queryPairs['BillingAddress'] = $billing->format('oneline');
+        $queryPairs['BillingPostCode'] = $billing->getPostcode();
+
+        if ($shipping) {
+            $queryPairs['DeliveryAddress'] = $shipping->getFormated();
+            $queryPairs['DeliveryPostCode'] = $shipping->getPostcode();
+        } else {
+            $queryPairs['DeliveryAddress'] = '';
+            $queryPairs['DeliveryPostCode'] = '';
+        }
+
+        $queryPairs['Basket'] = $this->getFormattedCart();
+
+        // For charities registered for Gift Aid
+        $queryPairs['AllowGiftAid'] = '0';
+
+        /**
+         * Allow fine control over AVS/CV2 checks and rules by changing this value. 0 is Default
+         * It can be changed dynamically, per transaction, if you wish.  See the VSP Server Protocol document
+         */
+        if ($this->getConfig()->getPaymentType() !== Mage_Worldnet_Model_Config::PAYMENT_TYPE_AUTHENTICATE) {
+            $queryPairs['ApplyAVSCV2'] = '0';
+        }
+
+        /**
+         * Allow fine control over 3D-Secure checks and rules by changing this value. 0 is Default
+         * It can be changed dynamically, per transaction, if you wish.  See the VSP Server Protocol document
+         */
+        $queryPairs['Apply3DSecure'] = '0';
+
+        if ($this->getDebug()) {
+            Mage::getModel('worldnet/api_debug')
+            ->setRequestBody($this->getWorldnetUrl()."\n".print_r($queryPairs,1))
+                ->save();
+        }
+
+        // Encrypt the plaintext string for inclusion in the hidden field
+        $result = $this->arrayToCrypt($queryPairs);
+        return $result;
+    }
+
+    /**
+     *  Form block description
+     *
+     *  @return	 object
+     */
+    public function createFormBlock($name)
+    {
+        $block = $this->getLayout()->createBlock('worldnet/form_standard', $name);
+        $block->setMethod($this->_code);
+        $block->setPayment($this->getPayment());
+        return $block;
+    }
+
+    /**
+     *  Return Order Place Redirect URL
+     *
+     *  @return	  string Order Redirect URL
+     */
+    public function getOrderPlaceRedirectUrl()
+    {
+        return Mage::getUrl('worldnet/standard/redirect');
+    }
+
+    /**
+     *  Return encrypted string with simple XOR algorithm
+     *
+     *  @param    string String to be encrypted
+     *  @return	  string Encrypted string
+     */
+    protected function simpleXOR ($string)
+    {
+        $result = '';
+        $cryptKey = $this->getConfig()->getCryptKey();
+
+        if (!$cryptKey) {
+            return $string;
+        }
+
+        // Initialise key array
+        $keyList = array();
+
+        // Convert $cryptKey into array of ASCII values
+        for($i = 0; $i < strlen($cryptKey); $i++){
+            $keyList[$i] = ord(substr($cryptKey, $i, 1));
+        }
+
+        // Step through string a character at a time
+        for($i = 0; $i < strlen($string); $i++) {
+            /**
+             * Get ASCII code from string, get ASCII code from key (loop through with MOD),
+             * XOR the two, get the character from the result
+             * % is MOD (modulus), ^ is XOR
+             */
+            $result .= chr(ord(substr($string, $i, 1)) ^ ($keyList[$i % strlen($cryptKey)]));
+        }
+        return $result;
+    }
+
+    /**
+     *  Extract possible response values into array from query string
+     *
+     *  @param    string Query string i.e. var1=value1&var2=value3...
+     *  @return	  array
+     */
+    protected function getToken($queryString) {
+
+        // List the possible tokens
+        $Tokens = array(
+                        "Status",
+                        "StatusDetail",
+                        "VendorTxCode",
+                        "VPSTxId",
+                        "TxAuthNo",
+                        "Amount",
+                        "AVSCV2",
+                        "AddressResult",
+                        "PostCodeResult",
+                        "CV2Result",
+                        "GiftAid",
+                        "3DSecureStatus",
+                        "CAVV"
+                        );
+
+        // Initialise arrays
+        $output = array();
+        $resultArray = array();
+
+        // Get the next token in the sequence
+        $c = count($Tokens);
+        for ($i = $c - 1; $i >= 0 ; $i--){
+            // Find the position in the string
+            $start = strpos($queryString, $Tokens[$i]);
+            // If it's present
+            if ($start !== false){
+                // Record position and token name
+                $resultArray[$i]['start'] = $start;
+                $resultArray[$i]['token'] = $Tokens[$i];
+            }
+        }
+
+        // Sort in order of position
+        sort($resultArray);
+
+        // Go through the result array, getting the token values
+        $c = count($resultArray);
+        for ($i = 0; $i < $c; $i++){
+            // Get the start point of the value
+            $valueStart = $resultArray[$i]['start'] + strlen($resultArray[$i]['token']) + 1;
+            // Get the length of the value
+            if ($i == $c-1) {
+                $output[$resultArray[$i]['token']] = substr($queryString, $valueStart);
+            } else {
+                $valueLength = $resultArray[$i+1]['start'] - $resultArray[$i]['start'] - strlen($resultArray[$i]['token']) - 2;
+                $output[$resultArray[$i]['token']] = substr($queryString, $valueStart, $valueLength);
+            }
+
+        }
+
+        return $output;
+    }
+
+    /**
+     *  Convert array (key => value, key => value, ...) to crypt string
+     *
+     *  @param    array Array to be converted
+     *  @return	  string Crypt string
+     */
+    public function arrayToCrypt ($array)
+    {
+        $parts = array();
+        if (is_array($array)) {
+            foreach ($array as $k => $v) {
+                $parts[] = $k . '=' . $v;
+            }
+        }
+        $result = implode('&', $parts);
+        $result = $this->simpleXOR($result);
+        $result = $this->base64Encode($result);
+        return $result;
+    }
+
+    /**
+     *  Reverse arrayToCrypt
+     *
+     *  @param    string Crypt string
+     *  @return	  array
+     */
+    public function cryptToArray ($crypted)
+    {
+        $decoded = $this->base64Decode($crypted);
+        $uncrypted = $this->simpleXOR($decoded);
+        $tokens = $this->getToken($uncrypted);
+        return $tokens;
+    }
+
+    /**
+     *  Custom base64_encode()
+     *
+     *  @param    String
+     *  @return	  String
+     */
+    protected function base64Encode($plain)
+    {
+        return base64_encode($plain);
+    }
+
+    /**
+     *  Custom base64_decode()
+     *
+     *  @param    String
+     *  @return	  String
+     */
+    protected function base64Decode($scrambled)
+    {
+        // Fix plus to space conversion issue
+        $scrambled = str_replace(" ","+",$scrambled);
+        return base64_decode($scrambled);
+    }
+
+    /**
+     *  Return Standard Checkout Form Fields for request to WorldnetTPS
+     *
+     *  @return	  array Array of hidden form fields
+     */
+    public function getStandardCheckoutFormFields ()
+    {
+        $order = $this->getOrder();
+
+        if (!($order instanceof Mage_Sales_Model_Order)) {
+            Mage::throwException($this->_getHelper()->__('Cannot retrieve order object'));
+        }
+        $session = Mage::getSingleton('checkout/session');
+
+	$gateway = $this->getConfig()->getWorldnetGateway();
+
+	// Get correct currency and checkout total in that currency
+	if($this->getConfig()->getWorldnetCheckoutCurrency() == Mage_Worldnet_Model_Config::CHECKOUTCUR_DISPLAY) {
+		$currency = Mage::app()->getStore()->getCurrentCurrencyCode();
+		$amount = sprintf('%.2f', $order->getGrandTotal());
+	} else {
+		$currency = $order->getBaseCurrencyCode();
+		$amount = sprintf('%.2f', $order->getBaseGrandTotal());
+	}
+
+	// Get relevant WorldNet account details for that currency
+        if($currency == $this->getConfig()->getCurrency()) {
+                $terminalid = $this->getConfig()->getTerminalid();
+                $sharedsecret = $this->getConfig()->getSharedsecret();
+        } elseif($currency == $this->getConfig()->getCurrencyTwo()) {
+                $terminalid = $this->getConfig()->getTerminalidTwo();
+                $sharedsecret = $this->getConfig()->getSharedsecretTwo();
+        } else {
+                $terminalid = $this->getConfig()->getTerminalidThree();
+                $sharedsecret = $this->getConfig()->getSharedsecretThree();
+        }
+
+        $orderid = $session->getQuoteId();
+        $datetime = date("d-m-y:H:i:s:000");
+	$billing = $order->getBillingAddress();
+
+	$receiptPageURL = Mage::getBaseUrl(Mage_Core_Model_Store::URL_TYPE_WEB, Mage::app()->getStore()->isCurrentlySecure()) . 'index.php/worldnet/standard/successResponse';
+
+        $fields = array(
+                        'TERMINALID'        => $terminalid,
+                        'ORDERID'           => $orderid,
+                        'CURRENCY'          => $currency,
+                        'AMOUNT'            => $amount,
+                        'DATETIME'          => $datetime,
+                        'CARDHOLDERNAME'    => $billing->getFirstname() . ' ' . $billing->getLastname(),
+                        'ADDRESS1'          => $billing->getStreet(1),
+                        'ADDRESS2'          => $billing->getCity() . ', ' . $billing->getRegion(),
+                        'POSTCODE'          => $billing->getPostcode(),
+                        'RECEIPTPAGEURL'    => $receiptPageURL,
+                        'HASH'              => md5($terminalid.$orderid.$amount.$datetime.$receiptPageURL.$sharedsecret)
+                        );
+        return $fields;
+    }
+    
+    public function refund(Varien_Object $payment, $amount) {
+        require("Api/worldnet_tps_xml.php");
+
+        $order = $payment->getOrder();
+	
+	if($this->getConfig()->getWorldnetCheckoutCurrency() == Mage_Worldnet_Model_Config::CHECKOUTCUR_DISPLAY) {
+		Mage::throwException("WorldNet plug-in cannot process refunds when the checkout currency is the cart display currency.");
+	} else {
+		$orderCurrency = $order->getBaseCurrencyCode();
+	}
+	
+        if($orderCurrency == $this->getConfig()->getCurrency()) {
+                $terminalid = $this->getConfig()->getTerminalid();
+                $sharedsecret = $this->getConfig()->getSharedsecret();
+        } elseif($order->getBaseCurrencyCode() == $this->getConfig()->getCurrencyTwo()) {
+                $terminalid = $this->getConfig()->getTerminalidTwo();
+                $sharedsecret = $this->getConfig()->getSharedsecretTwo();
+        } else {
+                $terminalid = $this->getConfig()->getTerminalidThree();
+                $sharedsecret = $this->getConfig()->getSharedsecretThree();
+        }
+        
+        $orderid = $payment->getRefundTransactionId();
+	$amount = sprintf('%.2f', $amount);
+	$gateway = $this->getConfig()->getWorldnetGateway();
+
+	$reason = "See Magento credit memo comments for more info";
+        
+        $refund = new XmlRefundRequest($terminalid,$orderid,$amount,"Magento Admin",$reason);
+        $response = $refund->ProcessRequestToGateway($sharedsecret, ($this->getConfig()->getMode() == Mage_Worldnet_Model_Config::MODE_LIVE ? false : true), $gateway);
+        
+        if($response->IsError()) {
+            $error = $response->ErrorString();
+        } else {
+            $expectedResponseHash = md5($terminalid . $orderid . $amount . $response->DateTime() . $response->ResponseCode() . $response->ResponseText() . $sharedsecret);
+            if($response->Hash() != $expectedResponseHash) {
+                $error = "Response Hash not as expected";
+            } else {
+                $payment->setStatus(self::STATUS_SUCCESS);
+            }
+        }
+        
+        if (isset($error)) {  
+            Mage::throwException($error);  
+        }
+          
+        return $this;
+   }
+}
