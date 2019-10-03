@@ -1,5 +1,5 @@
 {
-    "name": "OpenMageModuleFostering\/worldnet_payment",
+    "name": "openmage-module-fostering\/worldnet_payment",
     "type": "magento-module",
     "license": "GPLv3",
     "homepage": "",
