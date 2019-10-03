@@ -1,16 +1,19 @@
 {
-    "name": "OpenMageModuleFostering/worldnet_payment",
+    "name": "OpenMageModuleFostering\/worldnet_payment",
     "type": "magento-module",
     "license": "GPLv3",
     "homepage": "",
     "description": "This plugin enables Hosted Payment Page for WorldNet Payment Gateway.",
     "authors": [
-    {
-        "name": "Worldnet",
-        "email": "namita.kapoor@worldnettps.com"
-    }
-],
+        {
+            "name": "Worldnet",
+            "email": "namita.kapoor@worldnettps.com"
+        }
+    ],
     "suggest": {
-        "magento-hackathon/magento-composer-installer": "*"
-    }
+        "magento-hackathon\/magento-composer-installer": "*"
+    },
+    "keywords": [
+        "openmage-module"
+    ]
 }
